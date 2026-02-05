@@ -1,0 +1,14 @@
+{
+  "jiHPJCGbN6TmtQDgmfmKAAcm8L32": {
+    "challenge": "t1P-VsQfeus_b-QuG102HtdSVrOYucVN5pSa5bjtnds",
+    "credential": {
+      "credentialID": "yE-nfEdyqEer9lFmPimzhQ",
+      "credentialPublicKey": "pQECAyYgASFYIAUQYu5RD0PQyl2y8jLh+KY4NhznxLcPnS84fsC1dPMoIlgg9pTFevkW62DF8MRhXpmQuQasBidt1SVvhzNQpTxSEtI=",
+      "counter": 0,
+      "transports": [
+        "hybrid",
+        "internal"
+      ]
+    }
+  }
+}
