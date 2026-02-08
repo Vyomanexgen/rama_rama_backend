@@ -7,304 +7,268 @@ const {
   generateRegistrationOptions,
   verifyRegistrationResponse,
   generateAuthenticationOptions,
-  verifyAuthenticationResponse
+  verifyAuthenticationResponse,
 } = require("@simplewebauthn/server");
+const { db } = require("../firebaseAdmin");
 
 /* ======================
-   PERSISTENT STORAGE
+   STORAGE
 ====================== */
 
 const STORE_FILE = path.join(__dirname, "../biometric-store.json");
-
-// Load existing registrations from file
 let biometricStore = {};
-try {
-  if (fs.existsSync(STORE_FILE)) {
-    const data = fs.readFileSync(STORE_FILE, "utf8");
-    biometricStore = JSON.parse(data);
-    console.log(`[BIOMETRIC] Loaded ${Object.keys(biometricStore).length} existing registrations from file`);
-  }
-} catch (err) {
-  console.error("[BIOMETRIC] Error loading store file:", err.message);
-  biometricStore = {};
+
+if (fs.existsSync(STORE_FILE)) {
+  biometricStore = JSON.parse(fs.readFileSync(STORE_FILE, "utf8"));
+  console.log(
+    `[BIOMETRIC] Loaded ${Object.keys(biometricStore).length} users`
+  );
 }
 
-// Save store to file
-function saveStore() {
+const saveStore = () =>
+  fs.writeFileSync(STORE_FILE, JSON.stringify(biometricStore, null, 2));
+
+const findEmployeeDocId = async (uid) => {
+  if (!uid) return null;
+
+  // Try direct document id
+  const direct = await db.collection("employees").doc(uid).get();
+  if (direct.exists) return direct.id;
+
+  // Try firebaseUid
+  const byFirebaseUid = await db
+    .collection("employees")
+    .where("firebaseUid", "==", uid)
+    .limit(1)
+    .get();
+  if (!byFirebaseUid.empty) return byFirebaseUid.docs[0].id;
+
+  // Try legacy uid field
+  const byLegacyUid = await db
+    .collection("employees")
+    .where("uid", "==", uid)
+    .limit(1)
+    .get();
+  if (!byLegacyUid.empty) return byLegacyUid.docs[0].id;
+
+  return null;
+};
+
+/* ======================
+   UTILS
+====================== */
+
+const toBase64Url = (value) => {
+  if (!value) return null;
+  if (typeof value === "string") return value;
+  if (value instanceof ArrayBuffer) {
+    return Buffer.from(value).toString("base64url");
+  }
+  if (ArrayBuffer.isView(value)) {
+    return Buffer.from(
+      value.buffer,
+      value.byteOffset,
+      value.byteLength
+    ).toString("base64url");
+  }
+  return Buffer.from(value).toString("base64url");
+};
+
+const fromBase64Url = (value) => {
+  if (!value) return null;
+  if (Buffer.isBuffer(value)) return value;
+  if (typeof value === "string") {
+    const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
+    return Buffer.from(normalized, "base64");
+  }
+  if (
+    typeof value === "object" &&
+    value.type === "Buffer" &&
+    Array.isArray(value.data)
+  ) {
+    return Buffer.from(value.data);
+  }
+  return Buffer.from(value);
+};
+
+const getOriginInfo = (req) => {
+  const origin = req.get("origin");
+  if (!origin) return { ok: false, message: "Missing Origin header" };
   try {
-    fs.writeFileSync(STORE_FILE, JSON.stringify(biometricStore, null, 2));
-    console.log("[BIOMETRIC] Store saved to file");
-  } catch (err) {
-    console.error("[BIOMETRIC] Error saving store:", err.message);
+    const url = new URL(origin);
+    return { ok: true, origin, host: url.hostname, protocol: url.protocol };
+  } catch (e) {
+    return { ok: false, message: "Invalid Origin header" };
   }
-}
+};
+
+const requireDevOrigin = (req) => {
+  const info = getOriginInfo(req);
+  if (!info.ok) return info;
+  const isLocalhost = info.host === "localhost" || info.host === "127.0.0.1";
+  if (!isLocalhost) {
+    return {
+      ok: false,
+      message:
+        "WebAuthn requires a secure context. Please use http://localhost:5173",
+    };
+  }
+  return { ok: true, origin: info.origin, rpID: info.host };
+};
 
 /* ======================
-   HELPER FUNCTIONS FOR UINT8ARRAY CONVERSION
+   CHECK REGISTRATION
 ====================== */
 
-// Convert object with numeric keys back to Uint8Array
-function objectToUint8Array(obj) {
-  if (!obj || typeof obj !== 'object') return obj;
-
-  // Check if it's a serialized Uint8Array (has numeric keys)
-  const keys = Object.keys(obj);
-  if (keys.length > 0 && keys.every(k => !isNaN(k))) {
-    const arr = new Uint8Array(keys.length);
-    keys.forEach(k => arr[parseInt(k)] = obj[k]);
-    return arr;
-  }
-
-  return obj;
-}
-
-// Convert Uint8Array to base64 for storage
-function uint8ArrayToBase64(arr) {
-  if (arr instanceof Uint8Array) {
-    return Buffer.from(arr).toString('base64');
-  }
-  return arr;
-}
-
-// Convert base64 back to Uint8Array
-function base64ToUint8Array(str) {
-  if (typeof str === 'string') {
-    return new Uint8Array(Buffer.from(str, 'base64'));
-  }
-  return str;
-}
-
-/* ======================
-   CHECK REGISTRATION STATUS
-====================== */
+router.get("/", (req, res) => {
+  res.json({ ok: true, service: "rr-backend", path: "/api/biometric" });
+});
 
 router.get("/check-registration/:uid", (req, res) => {
-
   const { uid } = req.params;
-
-  console.log(`[BIOMETRIC] Checking registration for UID: ${uid}`);
-
-  if (!uid) {
-    console.error("[BIOMETRIC] Missing UID in check-registration");
-    return res.status(400).json({
-      registered: false,
-      error: "Missing user ID"
-    });
-  }
-
-  const isRegistered = !!(biometricStore[uid]?.credential);
-
-  console.log(`[BIOMETRIC] UID ${uid} registration status: ${isRegistered}`);
-
-  res.json({ registered: isRegistered });
+  res.json({ registered: !!biometricStore[uid]?.credential });
 });
 
 /* ======================
    REGISTER OPTIONS
 ====================== */
 
-router.get("/register-options/:uid", async (req, res) => {  // ← Made async
-
+router.get("/register-options/:uid", async (req, res) => {
   const { uid } = req.params;
+  const originInfo = requireDevOrigin(req);
+  if (!originInfo.ok) return res.status(400).json({ error: originInfo.message });
 
-  console.log(`[BIOMETRIC] Generating registration options for UID: ${uid}`);
+  const options = await generateRegistrationOptions({
+    rpName: "Attendance System",
+    rpID: originInfo.rpID,
+    userID: new TextEncoder().encode(uid),
+    userName: uid,
+    timeout: 60000,
+    attestationType: "none",
+    authenticatorSelection: {
+      authenticatorAttachment: "platform",
+      userVerification: "required",
+    },
+  });
 
-  if (!uid) {
-    console.error("[BIOMETRIC] Missing UID in register-options");
-    return res.status(400).json({ error: "Missing user ID" });
-  }
+  biometricStore[uid] = { challenge: options.challenge };
+  saveStore();
 
-  try {
-    // Convert string UID to Uint8Array (required by @simplewebauthn/server v13+)
-    console.log(`[BIOMETRIC] Converting UID to Uint8Array...`);
-    const userIDBuffer = new TextEncoder().encode(uid);
-    console.log(`[BIOMETRIC] UserID buffer created, length:`, userIDBuffer.length);
-
-    console.log(`[BIOMETRIC] Calling generateRegistrationOptions...`);
-    const options = await generateRegistrationOptions({  // ← Added await
-      rpName: "Attendance System",
-      rpID: "localhost",
-      userID: userIDBuffer,
-      userName: uid,
-      userDisplayName: uid,
-      timeout: 60000,
-      attestationType: "none",
-      authenticatorSelection: {
-        authenticatorAttachment: "platform",
-        requireResidentKey: false,
-        residentKey: "preferred",
-        userVerification: "discouraged"  // ← Changed from "preferred" to "discouraged"
-      }
-    });
-
-    console.log(`[BIOMETRIC] ✅ generateRegistrationOptions succeeded!`);
-    console.log(`[BIOMETRIC] Options object:`, JSON.stringify(options, null, 2));
-
-    // Store the challenge for verification
-    biometricStore[uid] = {
-      challenge: options.challenge
-    };
-
-    console.log(`[BIOMETRIC] Registration options generated for UID: ${uid}`);
-    console.log(`[BIOMETRIC] Challenge stored:`, options.challenge);
-    console.log(`[BIOMETRIC] Sending response...`);
-
-    res.json(options);
-
-  } catch (err) {
-    console.error("[BIOMETRIC] ❌ ERROR generating registration options!");
-    console.error("[BIOMETRIC] Error object:", err);
-    console.error("[BIOMETRIC] Error name:", err.name);
-    console.error("[BIOMETRIC] Error message:", err.message);
-    console.error("[BIOMETRIC] Error stack:", err.stack);
-    res.status(500).json({ error: "Failed to generate registration options", details: err.message });
-  }
+  res.json(options);
 });
 
 /* ======================
    VERIFY REGISTER
 ====================== */
 
+const handleVerifyRegister = async (userId, req, res) => {
+  const expectedChallenge = biometricStore[userId]?.challenge;
+  const originInfo = requireDevOrigin(req);
+  if (!originInfo.ok) return res.status(400).json({ error: originInfo.message });
+
+  if (!expectedChallenge) {
+    return res.status(400).json({ error: "Session expired" });
+  }
+
+  const verification = await verifyRegistrationResponse({
+    response: req.body,
+    expectedChallenge,
+    expectedOrigin: originInfo.origin,
+    expectedRPID: originInfo.rpID,
+    requireUserVerification: true,
+  });
+
+  if (!verification.verified) {
+    return res.status(400).json({ error: "Verification failed" });
+  }
+
+  const info = verification.registrationInfo;
+  if (!info || !info.credential) {
+    return res.status(400).json({ error: "Missing credential info" });
+  }
+
+  const credentialID = toBase64Url(info.credential.id || info.credentialID);
+  const credentialPublicKey = toBase64Url(
+    info.credential.publicKey || info.credentialPublicKey
+  );
+  if (!credentialID || !credentialPublicKey) {
+    return res.status(400).json({ error: "Invalid credential data" });
+  }
+
+  biometricStore[userId].credential = {
+    credentialID,
+    credentialPublicKey,
+    counter: info.credential.counter ?? info.counter ?? 0,
+    transports: info.credential.transports || ["internal"],
+  };
+
+  saveStore();
+
+  const employeeId = await findEmployeeDocId(userId);
+  if (employeeId) {
+    await db.collection("employees").doc(employeeId).set(
+      {
+        fingerprint: {
+          startRegistered: true,
+          endRegistered: true,
+          registrationRequested: false,
+          registeredAt: new Date(),
+        },
+      },
+      { merge: true }
+    );
+  }
+
+  res.json({ success: true });
+};
+
 router.post("/verify-register/:uid", async (req, res) => {
-
   const { uid } = req.params;
+  return handleVerifyRegister(uid, req, res);
+});
 
-  console.log(`[BIOMETRIC] Verifying registration for UID: ${uid}`);
-  console.log(`[BIOMETRIC] Request body:`, JSON.stringify(req.body, null, 2));
-
+router.post("/verify", async (req, res) => {
+  const uid = req.body?.uid || req.query?.uid || req.get("x-uid");
   if (!uid) {
-    console.error("[BIOMETRIC] Missing UID in verify-register");
-    return res.status(400).json({ error: "Missing user ID" });
+    return res.status(400).json({ error: "uid required" });
   }
+  return handleVerifyRegister(uid, req, res);
+});
 
-  if (!biometricStore[uid]?.challenge) {
-    console.error(`[BIOMETRIC] No challenge found for UID: ${uid}`);
-    console.error(`[BIOMETRIC] Available UIDs in store:`, Object.keys(biometricStore));
-    return res.status(400).json({
-      error: "Registration session expired. Please try again."
-    });
-  }
-
-  try {
-
-    console.log(`[BIOMETRIC] Expected challenge:`, biometricStore[uid].challenge);
-    console.log(`[BIOMETRIC] Expected origin: http://localhost:5173`);
-    console.log(`[BIOMETRIC] Expected RPID: localhost`);
-
-    const verification = await verifyRegistrationResponse({
-      response: req.body,
-      expectedChallenge: biometricStore[uid].challenge,
-      expectedOrigin: "http://localhost:5173",
-      expectedRPID: "localhost",
-      requireUserVerification: false  // Match the "discouraged" setting from registration options
-    })
-
-      ;
-
-    console.log(`[BIOMETRIC] Verification result:`, verification);
-    console.log(`[BIOMETRIC] Registration Info:`, JSON.stringify(verification.registrationInfo, null, 2));
-
-    if (!verification.verified) {
-      console.error(`[BIOMETRIC] Registration verification failed for UID: ${uid}`);
-      return res.status(400).json({
-        success: false,
-        error: "Fingerprint verification failed"
-      });
-    }
-
-    // Store credential data with base64-encoded Uint8Arrays for proper JSON serialization
-    const credentialData = {
-      credentialID: uint8ArrayToBase64(verification.registrationInfo.credentialID || verification.registrationInfo.credential?.id),
-      credentialPublicKey: uint8ArrayToBase64(verification.registrationInfo.credentialPublicKey || verification.registrationInfo.credential?.publicKey),
-      counter: verification.registrationInfo.counter || verification.registrationInfo.credential?.counter || 0,
-      transports: verification.registrationInfo.credential?.transports || []
-    };
-
-    biometricStore[uid].credential = credentialData;
-
-    console.log(`[BIOMETRIC] Stored credential (base64):`, credentialData);
-
-    // Save to file for persistence
-    saveStore();
-
-    console.log(`[BIOMETRIC] ✅ Registration successful for UID: ${uid}`);
-
-    res.json({ success: true });
-
-  } catch (err) {
-    console.error(`[BIOMETRIC] ❌ Registration error for UID ${uid}`);
-    console.error(`[BIOMETRIC] Error name:`, err.name);
-    console.error(`[BIOMETRIC] Error message:`, err.message);
-    console.error(`[BIOMETRIC] Error stack:`, err.stack);
-    console.error(`[BIOMETRIC] Full error object:`, err);
-
-    res.status(400).json({
-      success: false,
-      error: "Registration failed. Please try again.",
-      details: err.message // Add error details for debugging
-    });
-  }
+router.get("/verify", (req, res) => {
+  res.status(405).json({ error: "Use POST /api/biometric/verify-register/:uid" });
 });
 
 /* ======================
    AUTH OPTIONS
 ====================== */
 
-router.get("/auth-options/:uid", async (req, res) => {  // ← Made async
-
+router.get("/auth-options/:uid", async (req, res) => {
   const { uid } = req.params;
+  const cred = biometricStore[uid]?.credential;
+  const originInfo = requireDevOrigin(req);
+  if (!originInfo.ok) return res.status(400).json({ error: originInfo.message });
 
-  console.log(`[BIOMETRIC] Generating auth options for UID: ${uid}`);
-
-  if (!uid) {
-    console.error("[BIOMETRIC] Missing UID in auth-options");
-    return res.status(400).json({ error: "Missing user ID" });
+  if (!cred) {
+    return res.status(400).json({ error: "Not registered" });
   }
 
-  if (!biometricStore[uid]?.credential) {
-    console.error(`[BIOMETRIC] User not registered - UID: ${uid}`);
-    return res.status(400).json({
-      error: "Fingerprint not registered. Please register first."
-    });
-  }
+  const options = await generateAuthenticationOptions({
+    rpID: originInfo.rpID,
+    allowCredentials: [
+      {
+        id: String(cred.credentialID),
+        transports: cred.transports,
+      },
+    ],
+    timeout: 60000,
+    userVerification: "required",
+  });
 
-  try {
-    console.log(`[BIOMETRIC] Credential data:`, JSON.stringify(biometricStore[uid].credential, null, 2));
+  biometricStore[uid].challenge = options.challenge;
+  saveStore();
 
-    // Get credential ID (it's stored as base64 string)
-    const credID = biometricStore[uid].credential.credentialID;
-
-    console.log(`[BIOMETRIC] Credential ID (base64):`, credID);
-
-    if (!credID) {
-      throw new Error("Credential ID not found in stored credential data");
-    }
-
-    const options = await generateAuthenticationOptions({
-      allowCredentials: [
-        {
-          id: credID,  // Pass as string - SimpleWebAuthn accepts base64url strings
-          type: "public-key",
-          transports: biometricStore[uid].credential.transports || ["internal", "hybrid"]
-        }
-      ],
-      userVerification: "discouraged",
-      timeout: 60000
-    });
-
-    biometricStore[uid].challenge = options.challenge;
-
-    console.log(`[BIOMETRIC] Auth options generated for UID: ${uid}`);
-
-    res.json(options);
-
-  } catch (err) {
-    console.error("[BIOMETRIC] ❌ Error generating auth options");
-    console.error("[BIOMETRIC] Error name:", err.name);
-    console.error("[BIOMETRIC] Error message:", err.message);
-    console.error("[BIOMETRIC] Error stack:", err.stack);
-    res.status(500).json({ error: "Failed to generate authentication options", details: err.message });
-  }
+  res.json(options);
 });
 
 /* ======================
@@ -312,92 +276,39 @@ router.get("/auth-options/:uid", async (req, res) => {  // ← Made async
 ====================== */
 
 router.post("/verify-auth/:uid", async (req, res) => {
-
   const { uid } = req.params;
+  const cred = biometricStore[uid]?.credential;
+  const expectedChallenge = biometricStore[uid]?.challenge;
+  const originInfo = requireDevOrigin(req);
+  if (!originInfo.ok) return res.status(400).json({ error: originInfo.message });
 
-  console.log(`[BIOMETRIC] Verifying authentication for UID: ${uid}`);
-
-  if (!uid) {
-    console.error("[BIOMETRIC] Missing UID in verify-auth");
-    return res.status(400).json({ error: "Missing user ID" });
+  if (!cred || !expectedChallenge) {
+    return res.status(400).json({ error: "Session expired" });
   }
 
-  if (!biometricStore[uid]?.credential) {
-    console.error(`[BIOMETRIC] User not registered - UID: ${uid}`);
-    return res.status(400).json({
-      success: false,
-      error: "Fingerprint registration lost. Please register again."
-    });
+  const verification = await verifyAuthenticationResponse({
+    response: req.body,
+    expectedChallenge,
+    expectedOrigin: originInfo.origin,
+    expectedRPID: originInfo.rpID,
+    credential: {
+      id: String(cred.credentialID),
+      publicKey: fromBase64Url(cred.credentialPublicKey),
+      counter: cred.counter,
+      transports: cred.transports,
+    },
+    requireUserVerification: true,
+  });
+
+  if (!verification.verified) {
+    return res.status(400).json({ error: "Authentication failed" });
   }
 
-  if (!biometricStore[uid]?.challenge) {
-    console.error(`[BIOMETRIC] No challenge found for UID: ${uid}`);
-    return res.status(400).json({
-      success: false,
-      error: "Authentication session expired. Please try again."
-    });
-  }
+  biometricStore[uid].credential.counter =
+    verification.authenticationInfo.newCounter;
 
-  try {
-
-    // Extract the stored credential data
-    const storedCredential = biometricStore[uid].credential;
-
-    console.log(`[BIOMETRIC] Stored credential data:`, JSON.stringify(storedCredential, null, 2));
-
-    // For SimpleWebAuthn v13+, the authenticator object structure is:
-    // { credential: { id, publicKey, counter }, ... }
-    const authenticator = {
-      credentialID: storedCredential.credentialID,
-      credentialPublicKey: base64ToUint8Array(storedCredential.credentialPublicKey),
-      counter: storedCredential.counter,
-      transports: storedCredential.transports
-    };
-
-    console.log(`[BIOMETRIC] Authenticator prepared for verification`);
-    console.log(`[BIOMETRIC] - credentialID:`, authenticator.credentialID);
-    console.log(`[BIOMETRIC] - credentialPublicKey type:`, authenticator.credentialPublicKey instanceof Uint8Array ? 'Uint8Array' : typeof authenticator.credentialPublicKey);
-    console.log(`[BIOMETRIC] - counter:`, authenticator.counter);
-
-    const verification = await verifyAuthenticationResponse({
-      response: req.body,
-      expectedChallenge: biometricStore[uid].challenge,
-      expectedOrigin: "http://localhost:5173",
-      expectedRPID: "localhost",
-      credential: {
-        id: storedCredential.credentialID,
-        publicKey: base64ToUint8Array(storedCredential.credentialPublicKey),
-        counter: storedCredential.counter,
-        transports: storedCredential.transports
-      },
-      requireUserVerification: false
-    });
-
-    if (!verification.verified) {
-      console.error(`[BIOMETRIC] Authentication verification failed for UID: ${uid}`);
-      return res.json({
-        success: false,
-        error: "Fingerprint authentication failed"
-      });
-    }
-
-    // Update the counter after successful authentication
-    biometricStore[uid].credential.counter = verification.authenticationInfo.newCounter;
-    saveStore();
-
-    console.log(`[BIOMETRIC] ✅ Authentication successful for UID: ${uid}`);
-
-    res.json({ success: true });
-
-  } catch (err) {
-    console.error(`[BIOMETRIC] Authentication error for UID ${uid}:`, err.message);
-    console.error(`[BIOMETRIC] Error stack:`, err.stack);
-    res.status(400).json({
-      success: false,
-      error: "Authentication failed. Please try again."
-    });
-  }
+  saveStore();
+  res.json({ success: true });
 });
 
 module.exports = router;
-

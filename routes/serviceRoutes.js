@@ -1,7 +1,8 @@
-const router = require("express").Router();
+const express = require("express");
+const { getServices } = require("../controllers/serviceController");
 
-router.get("/test", (req, res) => {
-  res.json({ message: "Route working" });
-});
+const router = express.Router();
+
+router.get("/", getServices);
 
 module.exports = router;
