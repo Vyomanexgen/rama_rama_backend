@@ -447,6 +447,8 @@ const manualLocationCheckIn = async (req, res) => {
       uid: employee.firebaseUid || employee.uid || null,
       lat: Number(lat),
       lng: Number(lng),
+      timestamp: new Date(),
+      createdAt: new Date(),
       loggedAt: new Date(),
       source: "manager",
       verifiedBy: req.user.uid,
@@ -504,6 +506,28 @@ const verifyAttendance = async (req, res) => {
       return res.status(403).json({ message: "Employee not assigned to manager" });
     }
 
+    // When manager marks Present directly, require a fresh biometric verification
+    // for that specific employee before accepting attendance.
+    if (finalStatus === "Present") {
+      const biometricVerified = !!req.body?.biometricVerified;
+      const biometricUid = String(req.body?.biometricUid || "").trim();
+      const expectedUid = String(employee.firebaseUid || employee.uid || employeeId).trim();
+
+      if (!biometricVerified) {
+        return res.status(400).json({
+          message: "Fingerprint verification required before marking Present",
+          code: "FINGERPRINT_REQUIRED",
+        });
+      }
+
+      if (biometricUid && expectedUid && biometricUid !== expectedUid) {
+        return res.status(400).json({
+          message: "Fingerprint verification does not match selected employee",
+          code: "FINGERPRINT_MISMATCH",
+        });
+      }
+    }
+
     const attendanceSnap = await db
       .collection("attendance")
       .where("employeeId", "==", employeeId)
@@ -533,14 +557,22 @@ const verifyAttendance = async (req, res) => {
       const locationSnap = await db
         .collection("locationLogs")
         .where("employeeId", "==", employeeId)
-        .where("timestamp", ">=", bounds.start)
-        .where("timestamp", "<=", bounds.end)
-        .orderBy("timestamp", "desc")
-        .limit(1)
         .get();
 
       if (!locationSnap.empty) {
-        const latest = locationSnap.docs[0].data();
+        let latest = null;
+        let latestTime = 0;
+
+        locationSnap.forEach((doc) => {
+          const data = doc.data();
+          const ts = data.timestamp || data.createdAt || data.loggedAt || data.updatedAt;
+          const time = ts && ts.toDate ? ts.toDate().getTime() : new Date(ts || 0).getTime();
+          if (time >= bounds.start.getTime() && time <= bounds.end.getTime() && time > latestTime) {
+            latest = data;
+            latestTime = time;
+          }
+        });
+
         if (latest?.lat != null && latest?.lng != null) {
           distanceMeters = Math.round(
             getDistanceInMeters(latest.lat, latest.lng, lat, lng)
@@ -561,6 +593,11 @@ const verifyAttendance = async (req, res) => {
       managerOverride: !hasAttendance || !hasFingerprints || !hasLocationEvidence,
       updatedAt: new Date(),
     };
+
+    if (finalStatus === "Present" && req.body?.biometricVerified) {
+      updates.startFingerprintVerified = true;
+      if (!attendance?.startFingerprintAt) updates.startFingerprintAt = new Date();
+    }
 
     if (distanceMeters != null) updates.distanceMeters = distanceMeters;
 

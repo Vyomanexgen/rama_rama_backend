@@ -1,14 +1,5 @@
 {
   "e4zw7FmwFjb17ysA9KG5aNT7qwE2": {
-    "challenge": "SVIFbqHnQknYkPplGg0fsQ6NjowyHyhSfjpjYirXgHI",
-    "credential": {
-      "credentialID": "JlMOchPOEo_kOmKyCnZbKw",
-      "credentialPublicKey": "pQECAyYgASFYICwnkXFvYJrxgsGpmJ-1M9JnUAEBvTZYDCJiOKDaAI6NIlggQ0NqTUMKuspJCQsHlL82pG8zRHhJCbPugVnzsu0RwrA",
-      "counter": 0,
-      "transports": [
-        "hybrid",
-        "internal"
-      ]
-    }
+    "challenge": "gIXPkrNGGqOmGGFSlXLvIGg0Ms-2eRMmX8wLaGB3qT0"
   }
 }

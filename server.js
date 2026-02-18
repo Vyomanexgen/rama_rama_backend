@@ -11,6 +11,8 @@ const testimonialRoutes = require("./routes/testimonialRoutes");
 const activityRoutes = require("./routes/activityRoutes");
 const reportRoutes = require("./routes/reportRoutes");
 const biometricRoutes = require("./routes/biometric.routes");
+const superadminRoutes = require("./routes/superadminRoutes");
+const notificationRoutes = require("./routes/notificationRoutes");
 
 const app = express();
 
@@ -48,6 +50,10 @@ app.get("/ping", (req, res) => {
 ====================== */
 app.use("/api/biometric", biometricRoutes);
 app.use("/api/auth", authRoutes);
+app.use("/api/superadmin", superadminRoutes);
+app.use("/api/notifications", notificationRoutes);
+app.use("/api/employee", employeeRoutes);
+app.use("/api/employee/manager", managerRoutes);
 app.use("/api/employees", employeeRoutes);
 app.use("/api/manager", managerRoutes);
 app.use("/api/services", serviceRoutes);

@@ -7,7 +7,8 @@ const {
   addEmployee,
   updateEmployee,
   deleteEmployee,
-  getMyAssignment
+  getMyAssignment,
+  resolvePortalByEmail,
 } = require("../controllers/employeeController");
 
 // ROUTES
@@ -22,5 +23,7 @@ router.delete("/:id", deleteEmployee);
 
 // Current employee assignment (requires auth)
 router.get("/me/assignment", authMiddleware, getMyAssignment);
+router.post("/resolve-role", resolvePortalByEmail);
+router.get("/resolve-role", resolvePortalByEmail);
 
 module.exports = router;
