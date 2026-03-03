@@ -1,3 +1,16 @@
 {
-  "ignore": ["biometric-store.json"]
+  "watch": [
+    "src/server.js",
+    "src/routes",
+    "src/controllers",
+    "src/middleware",
+    "src/models",
+    "src/services",
+    "src/utils",
+    "src/config"
+  ],
+  "ext": "js,json",
+  "delay": "500ms",
+  "ignore": ["node_modules/**"],
+  "legacyWatch": true
 }

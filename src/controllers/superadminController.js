@@ -852,55 +852,6 @@ exports.listActivityLogs = async (req, res) => {
       } catch (_) {}
     }
 
-    // 5) Fingerprint logs derived from attendance + employee profile flags
-    if (type === "all" || type === "fingerprint") {
-      try {
-        const attendanceSnap = await db.collection("attendance").limit(500).get();
-        attendanceSnap.docs.forEach((doc) => {
-          const a = doc.data() || {};
-          const hasFp =
-            !!a.startFingerprintAt ||
-            !!a.endFingerprintAt ||
-            !!a.startFingerprintVerified ||
-            !!a.endFingerprintVerified;
-          if (!hasFp) return;
-          pushLog(logs, {
-            id: `fp-att:${doc.id}`,
-            createdAt: a.updatedAt || a.time || a.createdAt || nowIso(),
-            scope: "fingerprint",
-            action: "fingerprint.attendance",
-            meta: {
-              employeeId: a.employeeId || a.uid || null,
-              date: a.date || null,
-              startVerified: !!a.startFingerprintVerified,
-              endVerified: !!a.endFingerprintVerified,
-            },
-          });
-        });
-      } catch (_) {}
-
-      try {
-        const employeesSnap = await db.collection("employees").limit(400).get();
-        employeesSnap.docs.forEach((doc) => {
-          const e = doc.data() || {};
-          const fp = e.fingerprint || {};
-          if (!fp.startRegistered && !fp.endRegistered) return;
-          pushLog(logs, {
-            id: `fp-emp:${doc.id}`,
-            createdAt: e.updatedAt || e.createdAt || nowIso(),
-            scope: "fingerprint",
-            action: "fingerprint.profile",
-            meta: {
-              employeeId: doc.id,
-              email: e.email || null,
-              startRegistered: !!fp.startRegistered,
-              endRegistered: !!fp.endRegistered,
-            },
-          });
-        });
-      } catch (_) {}
-    }
-
     // Filter by type from action/scope when requested
     const typeFor = (x) => {
       const a = String(x.action || "").toLowerCase();
@@ -908,7 +859,6 @@ exports.listActivityLogs = async (req, res) => {
       if (a.startsWith("auth.") || a.includes("login") || s === "auth") return "login";
       if (a.startsWith("attendance.") || s === "attendance") return "attendance";
       if (a.startsWith("announcement.") || s === "announcement") return "announcement";
-      if (a.startsWith("fingerprint.") || s === "fingerprint") return "fingerprint";
       return "other";
     };
 

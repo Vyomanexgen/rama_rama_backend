@@ -7,7 +7,7 @@
 //   node scripts/dedupeManagersByEmail.js            # dry-run
 //   node scripts/dedupeManagersByEmail.js --apply   # apply changes
 
-const { auth, db } = require("../firebaseAdmin");
+const { auth, db } = require("../src/firebaseAdmin");
 
 const normalizeEmail = (email) => String(email || "").trim().toLowerCase();
 
@@ -129,4 +129,3 @@ main().catch((e) => {
   console.error("ERROR", e?.code || "", e?.message || e);
   process.exit(1);
 });
-

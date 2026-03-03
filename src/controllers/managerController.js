@@ -1,5 +1,3 @@
-const fs = require("fs");
-const path = require("path");
 const { db } = require("../firebaseAdmin");
 const { getDistanceInMeters } = require("../utils/geo");
 const { getTodayIso, isValidIsoDate, getDateRange, getDayBounds } = require("../utils/date");
@@ -18,7 +16,6 @@ const {
   computeEmployeePerformance,
 } = require("../services/managerService");
 
-const STORE_FILE = path.join(__dirname, "../biometric-store.json");
 const DEFAULT_RADIUS_METERS = 100;
 
 const toIso = (value) => {
@@ -26,16 +23,6 @@ const toIso = (value) => {
   if (value.toDate) return value.toDate().toISOString();
   const d = new Date(value);
   return Number.isNaN(d.getTime()) ? null : d.toISOString();
-};
-
-const updateBiometricStore = (uid) => {
-  if (!uid) return;
-  if (!fs.existsSync(STORE_FILE)) return;
-  const store = JSON.parse(fs.readFileSync(STORE_FILE, "utf8"));
-  if (store[uid]) {
-    delete store[uid];
-    fs.writeFileSync(STORE_FILE, JSON.stringify(store, null, 2));
-  }
 };
 
 const validateDateQuery = (value) => {
@@ -131,25 +118,20 @@ const attendanceList = async (req, res) => {
         DEFAULT_RADIUS_METERS
       );
 
-      const startFingerprint = !!attendance?.startFingerprintAt || !!attendance?.startFingerprintVerified;
-      const endFingerprint = !!attendance?.endFingerprintAt || !!attendance?.endFingerprintVerified;
-
       return {
         id: employee.id,
         name: employee.name || employee.fullName || employee.email,
         email: employee.email,
         department: employee.department || employee.dept || "-",
         assignedLocation: locationStatus.assignedLocation,
-        fingerprintStatus: {
-          start: startFingerprint,
-          end: endFingerprint,
-        },
         locationStatus,
         attendanceStatus: attendance?.status || null,
         managerVerified: !!attendance?.managerVerified,
         attendanceTime: toIso(
           attendance?.time || attendance?.createdAt || attendance?.updatedAt
         ),
+        punchInAt: toIso(attendance?.punchInAt),
+        punchOutAt: toIso(attendance?.punchOutAt),
         lastLoginAt: toIso(
           employee.lastLoginAt || employee.lastSeen || employee.lastLogin || employee.loginAt
         ),
@@ -210,7 +192,6 @@ const employees = async (req, res) => {
         return haystack.includes(q);
       })
       .map((employee) => {
-        const fingerprint = employee.fingerprint || {};
         const summary = summaryMap.get(employee.id) || { present: 0, late: 0, absent: 0, "half-day": 0, total: 0 };
         const attendancePercent = summary.total
           ? Math.round(((summary.present + summary.late + summary["half-day"]) / summary.total) * 100)
@@ -223,10 +204,6 @@ const employees = async (req, res) => {
           department: employee.department || employee.dept || "-",
           assignedLocation: employee.assignedLocation || employee.location || null,
           workSchedule: employee.workSchedule || null,
-          fingerprintStatus: {
-            startRegistered: !!fingerprint.startRegistered,
-            endRegistered: !!fingerprint.endRegistered,
-          },
           attendanceSummary: {
             rangeDays: 30,
             present: summary.present,
@@ -242,126 +219,6 @@ const employees = async (req, res) => {
   } catch (error) {
     console.error("MANAGER EMPLOYEES ERROR:", error);
     res.status(500).json({ message: "Failed to load employees" });
-  }
-};
-
-// ============================
-// Fingerprint List
-// ============================
-const fingerprintList = async (req, res) => {
-  try {
-    const employees = await getAssignedEmployees(db, req.user);
-
-    const list = employees.map((employee) => {
-      const fingerprint = employee.fingerprint || {};
-      const startRegistered = !!fingerprint.startRegistered;
-      const endRegistered = !!fingerprint.endRegistered;
-      const statusLabel = startRegistered && endRegistered
-        ? "Registered"
-        : startRegistered || endRegistered
-          ? "Partially Registered"
-          : "Not Registered";
-
-      return {
-        id: employee.id,
-        name: employee.name || employee.fullName || employee.email,
-        email: employee.email,
-        department: employee.department || employee.dept || "-",
-        fingerprintStatus: {
-          startRegistered,
-          endRegistered,
-          status: statusLabel,
-        },
-      };
-    });
-
-    res.json({ employees: list });
-  } catch (error) {
-    console.error("MANAGER FINGERPRINT LIST ERROR:", error);
-    res.status(500).json({ message: "Failed to load fingerprint list" });
-  }
-};
-
-// ============================
-// Fingerprint Actions
-// ============================
-const fingerprintRegister = async (req, res) => {
-  try {
-    const { employeeId, phase } = req.body;
-
-    if (!employeeId) {
-      return res.status(400).json({ message: "employeeId required" });
-    }
-
-    const employeeDoc = await db.collection("employees").doc(employeeId).get();
-    if (!employeeDoc.exists) return res.status(404).json({ message: "Employee not found" });
-
-    const employee = employeeDoc.data();
-    const assignedToManager =
-      employee.managerId === req.user.uid ||
-      (req.user.email && employee.managerEmail === req.user.email);
-
-    if (!assignedToManager) {
-      return res.status(403).json({ message: "Employee not assigned to manager" });
-    }
-
-    const updates = {
-      fingerprint: employee.fingerprint || {},
-    };
-
-    updates.fingerprint.registrationRequested = true;
-    updates.fingerprint.requestedBy = req.user.email || req.user.uid;
-    updates.fingerprint.requestedAt = new Date();
-    updates.fingerprint.requestedPhase = phase || "start";
-
-    await db.collection("employees").doc(employeeId).update(updates);
-
-    res.json({ success: true });
-  } catch (error) {
-    console.error("MANAGER FINGERPRINT REGISTER ERROR:", error);
-    res.status(500).json({ message: "Failed to request fingerprint registration" });
-  }
-};
-
-const fingerprintReregister = async (req, res) => {
-  try {
-    const { employeeId, phase } = req.body;
-
-    if (!employeeId) {
-      return res.status(400).json({ message: "employeeId required" });
-    }
-
-    const employeeDoc = await db.collection("employees").doc(employeeId).get();
-    if (!employeeDoc.exists) return res.status(404).json({ message: "Employee not found" });
-
-    const employee = employeeDoc.data();
-    const assignedToManager =
-      employee.managerId === req.user.uid ||
-      (req.user.email && employee.managerEmail === req.user.email);
-
-    if (!assignedToManager) {
-      return res.status(403).json({ message: "Employee not assigned to manager" });
-    }
-
-    const updates = {
-      fingerprint: employee.fingerprint || {},
-    };
-
-    updates.fingerprint.startRegistered = false;
-    updates.fingerprint.endRegistered = false;
-    updates.fingerprint.registrationRequested = true;
-    updates.fingerprint.requestedBy = req.user.email || req.user.uid;
-    updates.fingerprint.requestedAt = new Date();
-    updates.fingerprint.requestedPhase = phase || "start";
-
-    updateBiometricStore(employee.firebaseUid || employee.uid);
-
-    await db.collection("employees").doc(employeeId).update(updates);
-
-    res.json({ success: true });
-  } catch (error) {
-    console.error("MANAGER FINGERPRINT REREGISTER ERROR:", error);
-    res.status(500).json({ message: "Failed to request fingerprint re-registration" });
   }
 };
 
@@ -506,28 +363,6 @@ const verifyAttendance = async (req, res) => {
       return res.status(403).json({ message: "Employee not assigned to manager" });
     }
 
-    // When manager marks Present directly, require a fresh biometric verification
-    // for that specific employee before accepting attendance.
-    if (finalStatus === "Present") {
-      const biometricVerified = !!req.body?.biometricVerified;
-      const biometricUid = String(req.body?.biometricUid || "").trim();
-      const expectedUid = String(employee.firebaseUid || employee.uid || employeeId).trim();
-
-      if (!biometricVerified) {
-        return res.status(400).json({
-          message: "Fingerprint verification required before marking Present",
-          code: "FINGERPRINT_REQUIRED",
-        });
-      }
-
-      if (biometricUid && expectedUid && biometricUid !== expectedUid) {
-        return res.status(400).json({
-          message: "Fingerprint verification does not match selected employee",
-          code: "FINGERPRINT_MISMATCH",
-        });
-      }
-    }
-
     const attendanceSnap = await db
       .collection("attendance")
       .where("employeeId", "==", employeeId)
@@ -540,10 +375,6 @@ const verifyAttendance = async (req, res) => {
       : { id: attendanceSnap.docs[0].id, ...attendanceSnap.docs[0].data() };
 
     const hasAttendance = !!attendance;
-    const startFingerprint = !!attendance?.startFingerprintAt || !!attendance?.startFingerprintVerified;
-    const endFingerprint = !!attendance?.endFingerprintAt || !!attendance?.endFingerprintVerified;
-    const hasFingerprints = startFingerprint && endFingerprint;
-
     const assigned = employee.assignedLocation || employee.location || {};
     const lat = assigned.lat ?? assigned.latitude;
     const lng = assigned.lng ?? assigned.longitude;
@@ -590,14 +421,9 @@ const verifyAttendance = async (req, res) => {
       verifiedBy: req.user.email || req.user.uid,
       managerId: req.user.uid,
       locationVerified: withinRange,
-      managerOverride: !hasAttendance || !hasFingerprints || !hasLocationEvidence,
+      managerOverride: !hasAttendance || !hasLocationEvidence,
       updatedAt: new Date(),
     };
-
-    if (finalStatus === "Present" && req.body?.biometricVerified) {
-      updates.startFingerprintVerified = true;
-      if (!attendance?.startFingerprintAt) updates.startFingerprintAt = new Date();
-    }
 
     if (distanceMeters != null) updates.distanceMeters = distanceMeters;
 
@@ -796,6 +622,9 @@ const getSettings = async (req, res) => {
         phone: profile.phone || userData.phone || "",
         department: profile.department || userData.department || "",
         managerId: profile.managerId || userData.managerId || req.user.uid,
+        profilePhoto: userData.profilePhoto || profile.profilePhoto || "",
+        city: profile.city || userData.city || "",
+        state: profile.state || userData.state || "",
       },
       settings: managerSettings,
     });
@@ -826,6 +655,49 @@ const updateSettings = async (req, res) => {
   } catch (error) {
     console.error("MANAGER SETTINGS UPDATE ERROR:", error);
     res.status(500).json({ message: "Failed to save settings" });
+  }
+};
+
+// ============================
+// Announcements (read-only)
+// ============================
+const listAnnouncements = async (req, res) => {
+  try {
+    const snap = await db.collection("announcements").orderBy("createdAt", "desc").get();
+    const announcements = snap.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
+    res.json({ announcements });
+  } catch (error) {
+    console.error("MANAGER ANNOUNCEMENTS ERROR:", error);
+    res.status(500).json({ message: "Failed to load announcements" });
+  }
+};
+
+// ============================
+// Update Profile Photo
+// ============================
+const updateProfilePhoto = async (req, res) => {
+  try {
+    const dataUrl = String(req.body?.dataUrl || "").trim();
+    if (!dataUrl.startsWith("data:image/")) {
+      return res.status(400).json({ message: "Invalid image data" });
+    }
+
+    if (dataUrl.length > 2_500_000) {
+      return res.status(400).json({ message: "Image too large" });
+    }
+
+    await db.collection("users").doc(req.user.uid).set(
+      {
+        profilePhoto: dataUrl,
+        updatedAt: new Date(),
+      },
+      { merge: true }
+    );
+
+    return res.json({ success: true, profilePhoto: dataUrl });
+  } catch (error) {
+    console.error("MANAGER PROFILE PHOTO ERROR:", error);
+    return res.status(500).json({ message: "Failed to update profile photo" });
   }
 };
 
@@ -904,16 +776,15 @@ module.exports = {
   dashboard,
   attendanceList,
   employees,
-  fingerprintList,
-  fingerprintRegister,
-  fingerprintReregister,
   location,
   verifyAttendance,
   reportsWeekly,
   reportsMonthly,
   reportsExport,
+  listAnnouncements,
   getSettings,
   updateSettings,
+  updateProfilePhoto,
   updateEmployee,
   manualLocationCheckIn,
 };

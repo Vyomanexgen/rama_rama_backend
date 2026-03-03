@@ -11,16 +11,15 @@ const {
   verifyAttendance,
   attendanceList,
   employees,
-  fingerprintList,
-  fingerprintRegister,
-  fingerprintReregister,
   location,
   manualLocationCheckIn,
   reportsWeekly,
   reportsMonthly,
   reportsExport,
+  listAnnouncements,
   getSettings,
   updateSettings,
+  updateProfilePhoto,
   updateEmployee,
 } = require("../controllers/managerController");
 
@@ -38,9 +37,6 @@ router.get("/attendance", attendanceList);
 router.get("/employees", employees);
 router.put("/employees/:employeeId", updateEmployee);
 
-router.get("/fingerprint", fingerprintList);
-router.post("/fingerprint/register", fingerprintRegister);
-router.post("/fingerprint/reregister", fingerprintReregister);
 
 router.get("/location", location);
 router.post("/location/checkin", manualLocationCheckIn);
@@ -49,7 +45,9 @@ router.get("/reports/weekly", reportsWeekly);
 router.get("/reports/monthly", reportsMonthly);
 router.get("/reports/export", reportsExport);
 
+router.get("/announcements", listAnnouncements);
 router.get("/settings", getSettings);
 router.put("/settings", updateSettings);
+router.post("/settings/profile-photo", updateProfilePhoto);
 
 module.exports = router;

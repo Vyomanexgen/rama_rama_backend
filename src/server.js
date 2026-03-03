@@ -3,14 +3,12 @@ const express = require("express");
 const cors = require("cors");
 
 // ROUTES
-const authRoutes = require("./routes/auth.routes");
 const employeeRoutes = require("./routes/employee.routes");
 const managerRoutes = require("./routes/managerRoutes");
 const serviceRoutes = require("./routes/serviceRoutes");
 const testimonialRoutes = require("./routes/testimonialRoutes");
 const activityRoutes = require("./routes/activityRoutes");
 const reportRoutes = require("./routes/reportRoutes");
-const biometricRoutes = require("./routes/biometric.routes");
 const superadminRoutes = require("./routes/superadminRoutes");
 const notificationRoutes = require("./routes/notificationRoutes");
 
@@ -48,8 +46,6 @@ app.get("/ping", (req, res) => {
 /* ======================
    API ROUTES
 ====================== */
-app.use("/api/biometric", biometricRoutes);
-app.use("/api/auth", authRoutes);
 app.use("/api/superadmin", superadminRoutes);
 app.use("/api/notifications", notificationRoutes);
 app.use("/api/employee", employeeRoutes);
